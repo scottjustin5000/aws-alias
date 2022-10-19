@@ -1,0 +1,116 @@
+[toplevel]
+whoami = sts get-caller-identity
+
+running-instances = ec2 describe-instances \
+    --filter Name=instance-state-name,Values=running \
+    --output table \
+    --query 'Reservations[].Instances[].{ID: InstanceId,Hostname: PublicDnsName,Name: Tags[?Key==`Name`].Value | [0],Type: InstanceType, Platform: Platform || `Linux`}'
+
+ebs-volumes= ec2 describe-volumes \
+    --query 'Volumes[].{VolumeId: VolumeId,State: State,Size: Size,Name: Tags[0].Value,AZ: AvailabilityZone}' \
+    --output table
+
+region = !f() { [[ $# -eq 1 ]] && aws configure set region "$1" || aws configure get region; }; f
+
+account = !cat ~/.aws/credentials | grep '^\(account\|assumed\)_' | cut -d ' ' -f3 | tr '\n' ' ' | awk '{ printf "Account: %s (%s) Role: %s", $1, $2, $3 }'
+
+less3 = !f() {
+  if ! command -v jq &> /dev/null
+  then
+    echo "jq could not be found: Try: brew install jq"
+    exit
+  fi
+
+  aws s3 cp $1 - | jq . | less
+  }; f
+
+cf-list = 
+  !f() {
+    aws cloudformation list-stacks \
+      --query "StackSummaries[?StackStatus != 'DELETE_COMPLETE' && starts_with(StackName, '${1}')].{StackName: StackName, StackStatus: StackStatus, UpdateTime: LastUpdatedTime}" \
+      --output table
+  }; f
+
+cf-describe = 
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws describe <stack_name>"
+    else
+      aws cloudformation describe-stacks --stack-name $1
+    fi
+  }; f
+
+cf-outputs = 
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws outputs <stack_name>"
+    else
+      aws cloudformation describe-stacks \
+        --stack-name $1 \
+        --query "Stacks[].Outputs[].{OutputKey: OutputKey, OutputValue: OutputValue}" \
+        --output table
+    fi
+  }; f
+
+cf-resources = 
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws resources <stack_name>"
+    else
+      aws cloudformation describe-stack-resources \
+        --stack-name $1 \
+        --query "StackResources[].{ResourceStatus: ResourceStatus, LogicalResourceId: LogicalResourceId, PhysicalResourceId: PhysicalResourceId}" \
+        --output table
+    fi
+  }; f
+
+cf-events =
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws events <stack_name>"
+    else
+      aws cloudformation describe-stack-events \
+        --stack-name $1 \
+        --query "StackEvents[].[Timestamp,ResourceStatus,LogicalResourceId,ResourceStatusReason]" \
+        --output table
+    fi
+  }; f
+
+cf-errors = 
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws errors <stack_name>"
+    else
+      aws cloudformation describe-stack-events \
+        --stack-name $1 \
+        --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[Timestamp,ResourceStatus,LogicalResourceId,ResourceStatusReason]" \
+        --output table
+    fi
+  }; f
+
+cf-delete = 
+  !f() {
+    if [ -z "$1" ]; then
+      echo "usage: aws delete <stack_name>"
+    else
+      aws cloudformation delete-stack \
+        --stack-name $1
+    fi
+  }; f
+
+find-access-key = !f() {
+    clear_to_eol=$(tput el)
+    for i in $(aws iam list-users --query "Users[].UserName" --output text); do
+      printf "\r%sSearching...$i" "${clear_to_eol}"
+      result=$(aws iam list-access-keys --output text --user-name "${i}" --query "AccessKeyMetadata[?AccessKeyId=='${1}'].UserName";)
+      if [ -n "${result}" ]; then
+         printf "\r%s%s is owned by %s.\n" "${lear_to_eol}" "$1" "${result}"
+         break
+      fi
+    done
+    if [ -z "${result}" ]; then
+      printf "\r%sKey not found." "${clear_to_eol}"
+    fi
+  }; f
+
+get-ssm = ssm get-parameter --with-decryption --query "Parameter.Value" --output text --name
